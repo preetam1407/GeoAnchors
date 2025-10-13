@@ -1,0 +1,2 @@
+Model name,Learning rate,Weight decay,Batch size,Epochs,GPA Hidden Size,Freeze T5,Subset,Min Training Loss,Min Validation Loss,Min Testing Loss
+2025-09-12_21-39-57,0.0001,0.05,2,5,512,False,subdata_10,0.3197853649854316,0.3259511601636966,0.33988534042008495
