@@ -34,231 +34,10 @@ It combines **CLIP’s visual backbone** with **anchor-based token selection** a
 
 ---
 
-## 🧠 Architecture Summary
+## 🧠 Architecture (End‑to‑End, Self‑Explanatory)
 
-```
-MultiViewDataset (NuScenes JSON)
-     ↓
-[ CLIP ViT-L/14 ]
-     ↓   (attention-based anchor selection)
-PerceiverResampler
-     ↓
-GPA (token → frame pooling)
-     ↓
-Linear projection → visual token (B,1,d_lm)
-     ↓
-T5 Encoder + Decoder
-     ↓
-Answer text
-```
-
----
-
-## 📂 Repository Structure
-
-```
-├── dataset.py                 # MultiViewDataset class (multi-frame + tokenizer collate)
-├── model.py (anchor_former_mvp.py)   # CLIP + AnchorFormer + Perceiver + GPA + GeoFormer(T5)
-├── train.py                   # Training script with subset, LoRA, checkpoint, and stats
-├── eval.py                    # Evaluation script (generate + EM/F1/BLEU/ROUGE metrics)
-├── multi_view_results/        # Auto-created for outputs, logs, and checkpoints
-└── data/
-    └── multi_frame/
-        ├── multi_frame_train.json
-        ├── multi_frame_val.json
-        └── multi_frame_test.json
-```
-
----
-
-## ⚙️ Installation
-
-```bash
-git clone https://github.com/<your-username>/AnchorFormer-VQA.git
-cd AnchorFormer-VQA
-pip install -r requirements.txt
-```
-
-**Minimal requirements:**
-```
-torch >= 2.0
-torchvision >= 0.15
-transformers >= 4.30
-tqdm
-matplotlib
-pandas
-peft        # for LoRA
-```
-
----
-
-## 🗃️ Dataset Format
-
-Each JSON file (`multi_frame_train.json`, `multi_frame_val.json`, `multi_frame_test.json`) is a list of samples:
-```json
-[
-  [
-    {"Q": "How many persons are there?", "A": "3"},
-    {
-      "front": "path/to/front_cam.jpg",
-      "left": "path/to/left_cam.jpg",
-      "right": "path/to/right_cam.jpg",
-      "rear": "path/to/rear_cam.jpg",
-      ...
-    }
-  ],
-  ...
-]
-```
-
-Each entry pairs a QA object with multiple synchronized view paths.
-
----
-
-## 🏋️‍♂️ Training
-
-### Full dataset training
-```bash
-python train.py   --dataset-dir data/multi_frame   --lm t5-base   --batch-size 2   --epochs 5
-```
-
-### Subset training (for quick experiments)
-```bash
-python train.py   --dataset-dir data/multi_frame   --use-subset subdata_10
-```
-
-### LoRA training
-```bash
-python train.py   --use-lora   --lora-r 16   --lora-alpha 32   --lora-dropout 0.05   --lora-target q k v o
-```
-
-### Checkpoint resume
-```bash
-python train.py   --load-checkpoint   --checkpoint-file 2025-09-12_21-39-57
-```
-
----
-
-## 📊 Outputs
-
-After each run, a directory like `multi_view_results/2025-09-12_21-39-57/` is created containing:
-
-| File | Description |
-|------|--------------|
-| `latest_model.pth` | Saved best model (merged if LoRA used) |
-| `loss.png` | Training vs validation loss plot |
-| `stats.json` | Full loss stats & hyperparameters |
-| `multi_view_results.csv` | CSV summary |
-| `lora_adapter/` | (Optional) LoRA adapter weights |
-
----
-
-## 🧩 Evaluation
-
-### Run evaluation
-```bash
-python eval.py   --checkpoint-dir 2025-09-12_21-39-57   --dataset-dir data/multi_frame   --batch-size 2
-```
-
-### Outputs
-All files are saved under the same checkpoint folder:
-- `predictions.json` — generated captions  
-- `predictions_with_gt.jsonl` — per-example comparison  
-- `per_example_metrics.csv` — spreadsheet-friendly table  
-- `metrics.json` and `metrics.csv` — aggregate metrics
-
-### Result metrics
-```json
-{
-  "count": 16817,
-  "EM": 0.4869,
-  "F1": 0.6355,
-  "ROUGE_L_F1": 0.6326
-}
-```
-
----
-
-## 🧮 Metrics Implemented
-
-| Metric | Description |
-|--------|--------------|
-| **EM** | Exact match after normalization |
-| **F1** | Token-level overlap harmonic mean |
-| **ROUGE-L (F1)** | Longest Common Subsequence–based similarity |
-
----
-
-## 💾 Subset Utility
-
-To create 1% and 10% subsets from full data:
-```bash
-python train.py --create-subsets --dry-run
-```
-- Subsets are saved to `data/multi_frame/subsets/subdata_1/` and `subdata_10/`
-- Deterministic sampling with `--seed`
-
----
-
-## 🧠 Model Components
-
-| Module | Role |
-|--------|------|
-| **MultiViewDataset** | Loads multiple view images + tokenizes Q/A pairs |
-| **CLIPVisionModel** | Extracts visual patch tokens |
-| **select_anchors_from_cls_attention** | Selects top-attention patches |
-| **PerceiverResampler** | Cross-attends anchors with full tokens |
-| **GPAPool** | Gated attention pooling within and across frames |
-| **GeoFormer (T5)** | Language model that fuses visual and text features |
-| **LoRA (optional)** | Parameter-efficient fine-tuning for T5 |
-
----
-
-## 📈 Logging & Visualization
-
-- All logs are printed in real-time with tqdm progress bars.
-- Per-epoch validation loss and previews (predicted vs gold) are displayed.
-- Loss curve automatically saved to `loss.png`.
-
----
-
-## 🧰 Reproducibility Tips
-
-- Use `--seed` (default 13) for deterministic subset creation.
-- Always match the **CLIP normalization constants** during eval (`build_img_tf()`).
-- Freeze or unfreeze CLIP/T5 weights via `--freeze-lm` and `AnchorFormerConfig.freeze_clip`.
-
----
-
-## 📜 Citation / Acknowledgment
-
-If you use or adapt this code, please cite or reference it as:
-
-> *GeoFormer-VQA: Multi-View Visual Token Optimization for Vision–Language Models.”*  
-> Author: [Preetam Chhimpa] (2025)
-
----
-
-## ✨ Author Notes
-
-This repository represents my exploration of **compute-efficient VLM token fusion** for autonomous-vehicle perception QA tasks.  
-It serves both as a research prototype and a learning framework for **vision–language token optimization**.
-
----
-
-### 🧩 Next Steps
-
-- [ ] Add architecture diagrams (CLIP → Perceiver → T5 fusion)
-- [ ] Extend dataset loader for other multi-camera datasets
-- [ ] Support mixed-precision training (AMP)
-- [ ] Experiment with T5-Large and ViT-H/14 CLIP models
-
----
-# AnchorFormer-VQA — End‑to‑End Architecture (All‑in‑One Mermaid)
-
-> Paste this entire block into your README.md (GitHub renders Mermaid).  
-> The diagram contains **end‑to‑end flow** plus **zoom‑ins** for *attention‑based anchor selection* and *Perceiver Resampler*.  
-> Replace back‑ticked file paths with your actual image paths if you want labels to show specific files.
+> The following **Mermaid** block is a complete, end‑to‑end diagram with two zoom‑ins (attention‑based anchor selection and Perceiver Resampler).  
+> GitHub renders Mermaid directly. Replace the back‑ticked image paths with your own to label the six views.
 
 ```mermaid
 flowchart TB
@@ -427,3 +206,206 @@ flowchart TB
   end
   S6 -. "Applies if --use-lora" .- S7
 ```
+
+---
+
+## 📂 Repository Structure
+
+```
+├── dataset.py                 # MultiViewDataset class (multi-frame + tokenizer collate)
+├── model.py (anchor_former_mvp.py)   # CLIP + AnchorFormer + Perceiver + GPA + GeoFormer(T5)
+├── train.py                   # Training script with subset, LoRA, checkpoint, and stats
+├── eval.py                    # Evaluation script (generate + EM/F1/BLEU/ROUGE metrics)
+├── multi_view_results/        # Auto-created for outputs, logs, and checkpoints
+└── data/
+    └── multi_frame/
+        ├── multi_frame_train.json
+        ├── multi_frame_val.json
+        └── multi_frame_test.json
+```
+
+---
+
+## ⚙️ Installation
+
+```bash
+git clone https://github.com/<your-username>/AnchorFormer-VQA.git
+cd AnchorFormer-VQA
+pip install -r requirements.txt
+```
+
+**Minimal requirements:**
+```
+torch >= 2.0
+torchvision >= 0.15
+transformers >= 4.30
+tqdm
+matplotlib
+pandas
+peft        # for LoRA
+```
+
+---
+
+## 🗃️ Dataset Format
+
+Each JSON file (`multi_frame_train.json`, `multi_frame_val.json`, `multi_frame_test.json`) is a list of samples:
+```json
+[
+  [
+    {"Q": "How many persons are there?", "A": "3"},
+    {
+      "front": "path/to/front_cam.jpg",
+      "left": "path/to/left_cam.jpg",
+      "right": "path/to/right_cam.jpg",
+      "rear": "path/to/rear_cam.jpg"
+    }
+  ]
+]
+```
+
+Each entry pairs a QA object with multiple synchronized view paths.
+
+---
+
+## 🏋️‍♂️ Training
+
+### Full dataset training
+```bash
+python train.py   --dataset-dir data/multi_frame   --lm t5-base   --batch-size 2   --epochs 5
+```
+
+### Subset training (for quick experiments)
+```bash
+python train.py   --dataset-dir data/multi_frame   --use-subset subdata_10
+```
+
+### LoRA training
+```bash
+python train.py   --use-lora   --lora-r 16   --lora-alpha 32   --lora-dropout 0.05   --lora-target q k v o
+```
+
+### Checkpoint resume
+```bash
+python train.py   --load-checkpoint   --checkpoint-file 2025-09-12_21-39-57
+```
+
+---
+
+## 📊 Outputs
+
+After each run, a directory like `multi_view_results/2025-09-12_21-39-57/` is created containing:
+
+| File | Description |
+|------|--------------|
+| `latest_model.pth` | Saved best model (merged if LoRA used) |
+| `loss.png` | Training vs validation loss plot |
+| `stats.json` | Full loss stats & hyperparameters |
+| `multi_view_results.csv` | CSV summary |
+| `lora_adapter/` | (Optional) LoRA adapter weights |
+
+---
+
+## 🧩 Evaluation
+
+### Run evaluation
+```bash
+python eval.py   --checkpoint-dir 2025-09-12_21-39-57   --dataset-dir data/multi_frame   --batch-size 2
+```
+
+### Outputs
+All files are saved under the same checkpoint folder:
+- `predictions.json` — generated captions  
+- `predictions_with_gt.jsonl` — per-example comparison  
+- `per_example_metrics.csv` — spreadsheet-friendly table  
+- `metrics.json` and `metrics.csv` — aggregate metrics
+
+### Result metrics
+```json
+{
+  "count": 16817,
+  "EM": 0.4869,
+  "F1": 0.6355,
+  "ROUGE_L_F1": 0.6326
+}
+```
+
+---
+
+## 🧮 Metrics Implemented
+
+| Metric | Description |
+|--------|--------------|
+| **EM** | Exact match after normalization |
+| **F1** | Token-level overlap harmonic mean |
+| **ROUGE-L (F1)** | Longest Common Subsequence–based similarity |
+
+> **Note:** `eval.py` also computes BLEU‑4 internally. If you prefer, you can add it back to the table and the sample metrics block.
+
+---
+
+## 💾 Subset Utility
+
+To create 1% and 10% subsets from full data:
+```bash
+python train.py --create-subsets --dry-run
+```
+- Subsets are saved to `data/multi_frame/subsets/subdata_1/` and `subdata_10/`
+- Deterministic sampling with `--seed`
+
+---
+
+## 🧠 Model Components
+
+| Module | Role |
+|--------|------|
+| **MultiViewDataset** | Loads multiple view images + tokenizes Q/A pairs |
+| **CLIPVisionModel** | Extracts visual patch tokens |
+| **select_anchors_from_cls_attention** | Selects top-attention patches |
+| **PerceiverResampler** | Cross-attends anchors with full tokens |
+| **GPAPool** | Gated attention pooling within and across frames |
+| **GeoFormer (T5)** | Language model that fuses visual and text features |
+| **LoRA (optional)** | Parameter-efficient fine-tuning for T5 |
+
+---
+
+## 📈 Logging & Visualization
+
+- All logs are printed in real-time with tqdm progress bars.
+- Per-epoch validation loss and previews (predicted vs gold) are displayed.
+- Loss curve automatically saved to `loss.png`.
+
+---
+
+## 🧰 Reproducibility Tips
+
+- Use `--seed` (default 13) for deterministic subset creation.
+- Always match the **CLIP normalization constants** during eval (`build_img_tf()`).
+- Freeze or unfreeze CLIP/T5 weights via `--freeze-lm` and `AnchorFormerConfig.freeze_clip`.
+
+---
+
+## 📜 Citation / Acknowledgment
+
+If you use or adapt this code, please cite or reference it as:
+
+> *“AnchorFormer-VQA: Multi-View Visual Token Optimization for Vision–Language Models.”*  
+> Author: **Preetam Chhimpa** (2025)
+
+---
+
+## ✨ Author Notes
+
+This repository represents my exploration of **compute-efficient VLM token fusion** for autonomous-vehicle perception QA tasks.  
+It serves both as a research prototype and a learning framework for **vision–language token optimization**.
+
+---
+
+### 🧩 Next Steps
+
+- [ ] Add attention heatmaps (assets) to accompany the anchor-selection zoom-in
+- [ ] Extend dataset loader for other multi-camera datasets
+- [ ] Support mixed-precision training (AMP)
+- [ ] Experiment with T5-Large and ViT-H/14 CLIP models
+
+---
