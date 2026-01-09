@@ -91,7 +91,7 @@ GeoFormer consists of:
 ## High-Level Architecture (IMAGE PLACEHOLDER)
 Replace the image below with your high-level pipeline figure.
 
-![High-Level Overview](assets/architecture/high_level.png)
+![High-Level Overview](assests/nobackhighlevelarch.png)
 
 Suggested path:
 - assets/architecture/high_level.png
@@ -101,7 +101,7 @@ Suggested path:
 ## Detailed Architecture (IMAGE PLACEHOLDER)
 Replace the image below with your detailed model diagram (AnchorFormer + Gated Pooling + T5).
 
-![Detailed Architecture](assets/architecture/architecture_detailed.png)
+![Detailed Architecture](assests/geoformer_eraser_architecture1.png)
 
 Suggested path:
 - assets/architecture/architecture_detailed.png
