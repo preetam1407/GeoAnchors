@@ -1,412 +1,465 @@
-# AnchorFormer-VQA: Multi-View Visual Token Optimization for VQA
+# GeoFormer: Multi-View Vision–Language Model for Autonomous Driving (VQA)
 
-Hi 👋 — I built this project to explore **vision–language token optimization** for **multi-view visual question answering** (VQA) using the [nuScenes](https://www.nuscenes.org/) dataset.  
-The core idea is to efficiently **compress multiple camera views** into a single **visual token**, and use that token to guide a **language model (T5)** to answer scene-level questions.
+GeoFormer is a **multi-view Visual Question Answering (VQA)** system for autonomous driving that fuses **6 synchronized surround-view camera images** with a **natural language question** and generates an **open-ended answer** (yes/no, counts, short explanations).
 
----
-
-## 🌆 Overview
-
-The system takes multiple synchronized views from an ego-vehicle and a question (e.g. *“How many motorcycles are there?”*) and outputs a short, textual answer.  
-It combines **CLIP’s visual backbone** with **anchor-based token selection** and a **lightweight Perceiver-style aggregator**, fused into **T5** for reasoning.
+> Core idea: compress multi-view visual information into a **compact scene representation** using **AnchorFormer + Gated Pooling**, then use **T5** to generate answers.
 
 ---
 
-## 🚀 Key Features
-
-- **AnchorFormer (Vision Module)**  
-  Efficiently selects top informative CLIP tokens via attention-based anchor sampling.
-
-- **Perceiver Resampler**  
-  Uses cross-attention and feed-forward residual layers to refine selected anchors.
-
-- **Gated Pooling Attention (GPA)**  
-  Performs gated token pooling within each frame, then across multiple views.
-
-- **GeoFormer (Vision + Language Fusion)**  
-  Fuses the single visual embedding with T5’s text encoder; the visual token is prepended to text embeddings before decoding.
-
-- **LoRA-enabled fine-tuning**  
-  Optional low-rank adaptation on the T5 model for parameter-efficient training.
-
-- **Subset creation utility**  
-  Automatically samples 1% or 10% data subsets for rapid experimentation.
+## Table of Contents
+- Motivation
+- Problem Statement
+- Challenges & Research Gap
+- Dataset
+- Method (GeoFormer)
+  - High-Level Architecture (image)
+  - Detailed Architecture (image)
+- Training Setup
+- Results
+  - Evaluation Metrics
+  - Baseline Comparison
+- Qualitative Results (Inferences)
+- Future Work (Phase-2)
+- References
+- Acknowledgements
 
 ---
 
-## 🧠 Architecture (End‑to‑End, Self‑Explanatory)
-
-> The following **Mermaid** block is a complete, end‑to‑end diagram with two zoom‑ins (attention‑based anchor selection and Perceiver Resampler).  
-> GitHub renders Mermaid directly. Replace the back‑ticked image paths with your own to label the six views.
-
-```mermaid
-flowchart TB
-  %% =========================
-  %% GLOBAL STYLES / LEGEND
-  %% =========================
-  classDef img      fill:#f7f7f7,stroke:#bfbfbf,stroke-width:1px,color:#333;
-  classDef block    fill:#e8f1ff,stroke:#4c8bf5,stroke-width:1.6px,color:#111;
-  classDef tensor   fill:#fff7e6,stroke:#d4a017,stroke-width:1.3px,color:#111;
-  classDef process  fill:#ffecec,stroke:#ff6b6b,stroke-width:1.6px,color:#111;
-  classDef note     fill:#e9f7ef,stroke:#46a86b,stroke-width:1.3px,color:#111;
-  classDef head     fill:#f0f4ff,stroke:#4c8bf5,stroke-width:1.3px,color:#111;
-  classDef emph     fill:#fef3c7,stroke:#d97706,stroke-width:1.6px,color:#111;
-
-  %% =========================
-  %% 0) INPUTS (T=6 VIEWS)
-  %% =========================
-  subgraph S0["0️⃣ Multi-View Inputs (T=6) → Transforms (Resize 224×224, ToFloat, Normalize[CLIP])"]
-    direction LR
-    I1["Front\n`data/multi_frame/.../front.jpg`"]:::img
-    I2["Front-Left\n`.../front_left.jpg`"]:::img
-    I3["Front-Right\n`.../front_right.jpg`"]:::img
-    I4["Back\n`.../back.jpg`"]:::img
-    I5["Back-Left\n`.../back_left.jpg`"]:::img
-    I6["Back-Right\n`.../back_right.jpg`"]:::img
-  end
-
-  %% =========================
-  %% 1) CLIP VISION ENCODER
-  %% =========================
-  subgraph S1["1️⃣ CLIP Vision Encoder (ViT-L/14) — produces tokens + last-layer self-attention"]
-    direction TB
-    CLIP["CLIP (frozen? `freeze_clip=True`)"]:::block
-    TOK["Hidden states Rv (B*T, S, D)\n[CLS, p1, p2, ..., p{S-1}]"]:::tensor
-    ATT["Last-layer attention Att (B*T, H, S, S)"]:::tensor
-    CLIP --> TOK
-    CLIP --> ATT
-  end
-
-  %% link inputs to CLIP
-  I1 --> CLIP
-  I2 --> CLIP
-  I3 --> CLIP
-  I4 --> CLIP
-  I5 --> CLIP
-  I6 --> CLIP
-
-  %% =========================
-  %% 1b) TOKEN GRID (CONCEPTUAL) — FOR ONE FRAME
-  %% =========================
-  subgraph S1b["🔎 Token Grid (one frame, conceptual)"]
-    direction TB
-    GCLS["CLS"]:::emph
-    row1["p1   p2   p3   p4   p5   p6   p7"]:::note
-    row2["p8   p9   p10  p11  p12  p13  p14"]:::note
-    row3["p15  p16  p17  p18  p19  p20  p21"]:::note
-    row4["p22  p23  p24  p25  p26  p27  p28"]:::note
-    row5["p29  p30  p31  p32  p33  p34  p35"]:::note
-    row6["p36  p37  p38  p39  p40  p41  p42"]:::note
-    row7["p43  p44  p45  p46  p47  p48  p49"]:::note
-  end
-  TOK -. "Tokens include CLS + grid of patches" .- S1b
-
-  %% =========================
-  %% 2) ATTENTION-BASED ANCHOR SELECTION
-  %% =========================
-  subgraph S2["2️⃣ Attention‑based Anchor Selection (per frame)"]
-    direction TB
-    CLS2P["Extract CLS→Patch scores\nAtt[:, :, 0, 1:] → (B*T, H, S-1)"]:::note
-    subgraph HEADS["Per-head Top‑k (encourage diversity across heads)"]
-      direction LR
-      H1["Head 1\nSort CLS→patch\nPick top‑k₁"]:::head
-      H2["Head 2\nSort CLS→patch\nPick top‑k₂"]:::head
-      H3["Head 3\nSort CLS→patch\nPick top‑k₃"]:::head
-      HH["Head H\nSort CLS→patch\nPick top‑k_H"]:::head
-    end
-    MERGE["Union across heads (dedup indices)"]:::process
-    FILL["Global backfill if needed:\nRank by mean over heads → fill until TN"]:::process
-    IA["IA = {CLS} ∪ Selected patches\n(B*T, TN+1, D)"]:::tensor
-    CLS2P --> HEADS --> MERGE --> FILL --> IA
-  end
-  ATT --> CLS2P
-  TOK --> HEADS
-
-  %% =========================
-  %% 2b) VISUALIZE SELECTION ON GRID (CONCEPTUAL OVERLAY)
-  %% =========================
-  subgraph S2b["🔎 Grid Overlay (conceptual) — showing selections"]
-    direction TB
-    note1["Example:\nHead‑1 picks {p3, p7, p18, ...}\nHead‑2 picks {p5, p9, p26, ...}\nHead‑3 picks {p1, p24, ...}"]:::note
-    union["Union + backfill → TN anchors"]:::process
-  end
-  S1b -. "CLS→patch heatmaps per head" .- S2b
-  HEADS --> S2b
-  S2b --> union --> IA
-
-  %% =========================
-  %% 3) PERCEIVER RESAMPLER (CROSS‑ATTN REFINEMENT)
-  %% =========================
-  subgraph S3["3️⃣ PerceiverResampler (depth = 6) — Q=IA, K/V=Rv"]
-    direction TB
-    Q["Queries = IA (B*T, M=TN+1, D)"]:::tensor
-    KV["Keys/Values = Rv (B*T, S, D)"]:::tensor
-
-    L1["Layer 1:\nCross‑Attention (Q=IA, K/V=Rv) + Residual"]:::block
-    F1["FeedForward (Pre‑LN) + Residual"]:::block
-    L2["Layer 2:\nCross‑Attention + Residual"]:::block
-    F2["FeedForward + Residual"]:::block
-    L3["Layer 3:\nCross‑Attention + Residual"]:::block
-    F3["FeedForward + Residual"]:::block
-    LN["Final LayerNorm"]:::block
-
-    OUT_HV["Hv: refined anchors\n(B*T, M, D)"]:::tensor
-
-    Q --> L1 --> F1 --> L2 --> F2 --> L3 --> F3 --> LN --> OUT_HV
-    KV --> L1
-  end
-  IA --> Q
-  TOK --> KV
-
-  %% =========================
-  %% 4) GPA POOLING (TOKEN→FRAME, FRAME→BATCH)
-  %% =========================
-  subgraph S4["4️⃣ Gated Pooling Attention (GPA)"]
-    direction TB
-    GPA1["GPA over anchors (per frame)\n(B*T, 1, D) = weighted sum over M"]:::process
-    RSH["Reshape → (B, T, D)"]:::note
-    GPA2["GPA over frames (multi‑view)\n(B, 1, D) = weighted sum over T"]:::process
-  end
-  OUT_HV --> GPA1 --> RSH --> GPA2
-
-  %% =========================
-  %% 5) PROJECTION → VISUAL TOKEN
-  %% =========================
-  subgraph S5["5️⃣ Linear Projection to LM width"]
-    direction TB
-    PROJ["Linear(D → d_lm)"]:::block
-    VTOK["Fused visual token\n(B, 1, d_lm)"]:::tensor
-    PROJ --> VTOK
-  end
-  GPA2 --> PROJ
-
-  %% =========================
-  %% 6) T5 FUSION → ANSWER
-  %% =========================
-  subgraph S6["6️⃣ T5 Fusion + Decoding"]
-    direction TB
-    TEXT["T5 Encoder (text)\ninput_ids, attention_mask → (B, L, d_lm)"]:::tensor
-    CAT["Prepend visual token\n→ (B, L+1, d_lm)\nUpdate mask (B, L+1)"]:::process
-    DEC["T5 Decoder"]:::block
-    ANS["Answer text"]:::tensor
-    TEXT --> CAT --> DEC --> ANS
-  end
-
-  VTOK --> CAT
-
-  %% =========================
-  %% 7) OPTIONAL: LoRA (if enabled)
-  %% =========================
-  subgraph S7["7️⃣ Optional: LoRA on T5 (PEFT)"]
-    direction TB
-    LCONF["Targets: q,k,v,o\nrank=r, alpha, dropout"]:::note
-    ADAPT["Train LoRA adapters\n(base weights frozen)"]:::process
-    MERGE_LORA["merge_and_unload → single checkpoint"]:::process
-    LCONF --> ADAPT --> MERGE_LORA
-  end
-  S6 -. "Applies if --use-lora" .- S7
-```
+## Motivation
+Autonomous vehicles operate in a dynamic world where decisions must be made quickly and should be explainable.
+Beyond perception outputs (boxes/lanes/trajectories), people ask scene-level questions like:
+- “What are we waiting for?”
+- “Is it safe to go?”
+GeoFormer adds a language interface on top of multi-view perception.
 
 ---
 
-## 📂 Repository Structure
+## Problem Statement
+Task: **Multi-view VQA for driving**.
 
-```
-├── dataset.py                 # MultiViewDataset class (multi-frame + tokenizer collate)
-├── model.py (anchor_former_mvp.py)   # CLIP + AnchorFormer + Perceiver + GPA + GeoFormer(T5)
-├── train.py                   # Training script with subset, LoRA, checkpoint, and stats
-├── eval.py                    # Evaluation script (generate + EM/F1/BLEU/ROUGE metrics)
-├── multi_view_results/        # Auto-created for outputs, logs, and checkpoints
-└── data/
-    └── multi_frame/
-        ├── multi_frame_train.json
-        ├── multi_frame_val.json
-        └── multi_frame_test.json
-```
+Input:
+- 6 synchronized surround-view camera images (front, front-left, front-right, back, back-left, back-right)
+- A natural language question
+
+Output:
+- An open-ended answer (yes/no, counts, short explanation)
+
+Goal:
+Learn p(a | I1..6, q) where I1..6 are the 6 views and q is the question.
 
 ---
 
-## ⚙️ Installation
+## Challenges & Research Gap
+- 6 cameras + occlusions + crowded roads → harder than single-view reasoning
+- Naively pushing all patch tokens into the language model is compute-heavy and redundant
+- Many AV-VLM systems are front-view biased → limited 360° understanding
+- Need an efficient multi-view fusion method that retains only relevant information
 
-```bash
-git clone https://github.com/<your-username>/AnchorFormer-VQA.git
-cd AnchorFormer-VQA
+---
+
+## Dataset
+Built on **nuScenes**:
+- ~1000 scenes, 6 RGB cameras → true 360° view
+- VQA-style annotations (keyframes + questions + answers)
+- ~377k Q/A over 696 scenes (example split):
+  - Train: ~341k
+  - Val: ~19.8k
+  - Test: ~16.8k
+- Question mix (example):
+  - Perception, Prediction, Planning, Behavior
+
+> NOTE: Put your dataset download + preprocessing instructions here.
+> If you already have scripts, link them below.
+
+---
+
+## Method: GeoFormer
+GeoFormer consists of:
+1) Shared Image Encoder (CLIP ViT-L/14)
+   - Encodes each of the 6 views using shared weights
+
+2) Token Compression (AnchorFormer)
+   - Uses CLS→patch attention to select important patches
+   - Refines selected anchors for compact multi-view reasoning
+
+3) Scene Fusion + Generation
+   - Gated Pooling fuses anchors into a single compact scene token
+   - T5 encoder–decoder generates answer conditioned on (scene token + question)
+
+---
+
+## High-Level Architecture (IMAGE PLACEHOLDER)
+Replace the image below with your high-level pipeline figure.
+
+![High-Level Overview](assests/architecture/high_level.png)
+
+Suggested path:
+- assests/architecture/high_level.png
+
+---
+
+## Detailed Architecture (IMAGE PLACEHOLDER)
+Replace the image below with your detailed model diagram (AnchorFormer + Gated Pooling + T5).
+
+![Detailed Architecture](assests/architecture/architecture_detailed.png)
+
+Suggested path:
+- assests/architecture/architecture_detailed.png
+
+---
+
+## Training Setup
+Example setup (adjust to your actual config):
+- Objective: seq2seq cross-entropy
+- Optimizer: AdamW
+- Learning Rate: 1e-4 (example)
+- Batch Size: 2 (example)
+- CLIP frozen, trainable modules: fusion + T5 (example)
+- GPU: NVIDIA A6000 (example)
+
+---
+
+## Installation (PLACEHOLDER)
+Create a venv and install dependencies:
+
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-**Minimal requirements:**
-```
-torch >= 2.0
-torchvision >= 0.15
-transformers >= 4.30
-tqdm
-matplotlib
-pandas
-peft        # for LoRA
-```
 
 ---
 
-## 🗃️ Dataset Format
+## Data Preparation (PLACEHOLDER)
+Example structure:
 
-Each JSON file (`multi_frame_train.json`, `multi_frame_val.json`, `multi_frame_test.json`) is a list of samples:
-```json
-[
-  [
-    {"Q": "How many persons are there?", "A": "3"},
-    {
-      "front": "path/to/front_cam.jpg",
-      "left": "path/to/left_cam.jpg",
-      "right": "path/to/right_cam.jpg",
-      "rear": "path/to/rear_cam.jpg"
-    }
-  ]
-]
-```
-
-Each entry pairs a QA object with multiple synchronized view paths.
+data/
+  nuscenes/
+    samples/
+    sweeps/
+    v1.0-trainval/
+  qa_annotations/
+    train.json
+    val.json
+    test.json
 
 ---
 
-## 🏋️‍♂️ Training
+## Training (PLACEHOLDER)
+Example:
 
-### Full dataset training
-```bash
-python train.py   --dataset-dir data/multi_frame   --lm t5-base   --batch-size 2   --epochs 5
-```
-
-### Subset training (for quick experiments)
-```bash
-python train.py   --dataset-dir data/multi_frame   --use-subset subdata_10
-```
-
-### LoRA training
-```bash
-python train.py   --use-lora   --lora-r 16   --lora-alpha 32   --lora-dropout 0.05   --lora-target q k v o
-```
-
-### Checkpoint resume
-```bash
-python train.py   --load-checkpoint   --checkpoint-file 2025-09-12_21-39-57
-```
+python train.py \
+  --config configs/train.yaml \
+  --data_root data/nuscenes \
+  --ann_root data/qa_annotations \
+  --save_dir checkpoints/geoforger
 
 ---
 
-## 📊 Outputs
+## Evaluation (PLACEHOLDER)
+Example:
 
-After each run, a directory like `multi_view_results/2025-09-12_21-39-57/` is created containing:
-
-| File | Description |
-|------|--------------|
-| `latest_model.pth` | Saved best model (merged if LoRA used) |
-| `loss.png` | Training vs validation loss plot |
-| `stats.json` | Full loss stats & hyperparameters |
-| `multi_view_results.csv` | CSV summary |
-| `lora_adapter/` | (Optional) LoRA adapter weights |
+python eval.py \
+  --ckpt checkpoints/geoforger/best.pt \
+  --split test \
+  --data_root data/nuscenes \
+  --ann_root data/qa_annotations
 
 ---
 
-## 🧩 Evaluation
+## Results
 
-### Run evaluation
-```bash
-python eval.py   --checkpoint-dir 2025-09-12_21-39-57   --dataset-dir data/multi_frame   --batch-size 2
-```
-
-### Outputs
-All files are saved under the same checkpoint folder:
-- `predictions.json` — generated captions  
-- `predictions_with_gt.jsonl` — per-example comparison  
-- `per_example_metrics.csv` — spreadsheet-friendly table  
-- `metrics.json` and `metrics.csv` — aggregate metrics
-
-### Result metrics
-```json
-{
-  "count": 16817,
-  "EM": 0.4869,
-  "F1": 0.6355,
-  "ROUGE_L_F1": 0.6326
-}
-```
+### Evaluation Metrics
+| Model     | EM (%) | F1 (%) | BLEU-4 | METEOR | ROUGE-L | CIDEr |
+|----------|--------:|-------:|-------:|-------:|--------:|------:|
+| GeoFormer | 51.02  | 69.60  | 47.10  | 37.39  | 69.12   | 2.99  |
 
 ---
 
-## 🧮 Metrics Implemented
-
-| Metric | Description |
-|--------|--------------|
-| **EM** | Exact match after normalization |
-| **F1** | Token-level overlap harmonic mean |
-| **ROUGE-L (F1)** | Longest Common Subsequence–based similarity |
-
-> **Note:** `eval.py` also computes BLEU‑4 internally. If you prefer, you can add it back to the table and the sample metrics block.
+### Baseline Comparison
+| Model | BLEU-4 [%] ↑ | METEOR [%] ↑ | ROUGE-L [%] ↑ | CIDEr ↑ |
+|------|--------------:|-------------:|--------------:|--------:|
+| EM-VLM4AD<sub>Base</sub> [1] | 45.36 | 34.49 | 71.98 | 3.20 |
+| EM-VLM4AD<sub>Q-Large</sub> [1] | 40.11 | 34.34 | 70.72 | 3.10 |
+| DriveLM-Agent [2] | 53.09 | 36.19 | 66.79 | 2.79 |
+| **GeoFormer (T5-base, subdata_10)** | **47.10** | **37.39** | **69.12** | **2.99** |
 
 ---
 
-## 💾 Subset Utility
+## Qualitative Results (Inferences)
 
-To create 1% and 10% subsets from full data:
-```bash
-python train.py --create-subsets --dry-run
-```
-- Subsets are saved to `data/multi_frame/subsets/subdata_1/` and `subdata_10/`
-- Deterministic sampling with `--seed`
+### Folder layout (required)
+Put all qualitative panels here (so your HTML tables render without editing paths):
+- `assests/images/qualitative/`
 
----
+Example:
+assests/images/qualitative/
+  0000_xxx__CAM_FRONT__xxx.jpg
+  0001_xxx__CAM_FRONT_LEFT__xxx.jpg
+  ...
 
-## 🧠 Model Components
+> NOTE: Below section is your same qualitative content, but with `images/...` fixed to `assests/images/...`.
 
-| Module | Role |
-|--------|------|
-| **MultiViewDataset** | Loads multiple view images + tokenizes Q/A pairs |
-| **CLIPVisionModel** | Extracts visual patch tokens |
-| **select_anchors_from_cls_attention** | Selects top-attention patches |
-| **PerceiverResampler** | Cross-attends anchors with full tokens |
-| **GPAPool** | Gated attention pooling within and across frames |
-| **GeoFormer (T5)** | Language model that fuses visual and text features |
-| **LoRA (optional)** | Parameter-efficient fine-tuning for T5 |
+# GeoFormer — Qualitative Panels
 
----
+_This report shows random, best, and worst test examples based on token-level F1, with all six nuScenes camera views._
 
-## 📈 Logging & Visualization
+# Random test examples (seed=42)
 
-- All logs are printed in real-time with tqdm progress bars.
-- Per-epoch validation loss and previews (predicted vs gold) are displayed.
-- Loss curve automatically saved to `loss.png`.
+## Example idx=3648
 
----
+## **Q:** Question: What is the future state of <c1,CAM_BACK,750.8,541.7>? 
 
-## 🧰 Reproducibility Tips
+## Answer: Keep going straight-
+<!-- **Pred:** `Keep going straight.` -->
+<!-- **Gold:** `Keep going straight.` -->
+<!-- *Metrics:* ✅ **Exact match** | (EM=1, F1=1.000) -->
 
-- Use `--seed` (default 13) for deterministic subset creation.
-- Always match the **CLIP normalization constants** during eval (`build_img_tf()`).
-- Freeze or unfreeze CLIP/T5 weights via `--freeze-lm` and `AnchorFormerConfig.freeze_clip`.
-
----
-
-## 📜 Citation / Acknowledgment
-
-If you use or adapt this code, please cite or reference it as:
-
-> *“AnchorFormer-VQA: Multi-View Visual Token Optimization for Vision–Language Models.”*  
-> Author: **Preetam Chhimpa** (2025)
-
----
-
-## ✨ Author Notes
-
-This repository represents my exploration of **compute-efficient VLM token fusion** for autonomous-vehicle perception QA tasks.  
-It serves both as a research prototype and a learning framework for **vision–language token optimization**.
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0000_n008-2018-07-26-12-13-50-0400__CAM_FRONT__1532621953112404.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0001_n008-2018-07-26-12-13-50-0400__CAM_FRONT_LEFT__1532621953104799.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0002_n008-2018-07-26-12-13-50-0400__CAM_FRONT_RIGHT__1532621953120482.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0003_n008-2018-07-26-12-13-50-0400__CAM_BACK__1532621953137562.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0004_n008-2018-07-26-12-13-50-0400__CAM_BACK_LEFT__1532621953147405.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0005_n008-2018-07-26-12-13-50-0400__CAM_BACK_RIGHT__1532621953128113.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
 
 ---
 
-### 🧩 Next Steps
+## Example idx=819
 
-- [ ] Add attention heatmaps (assets) to accompany the anchor-selection zoom-in
-- [ ] Extend dataset loader for other multi-camera datasets
-- [ ] Support mixed-precision training (AMP)
-- [ ] Experiment with T5-Large and ViT-H/14 CLIP models
+**Q:** Question: Are there barriers to the front of the ego car? Answer:
+**Pred:** `Yes.`
+**Gold:** `Yes.`
+
+*Metrics:* ✅ **Exact match** | (EM=1, F1=1.000)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0006_n008-2018-09-18-13-41-50-0400__CAM_FRONT__1537293306662404.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0007_n008-2018-09-18-13-41-50-0400__CAM_FRONT_LEFT__1537293306654799.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0008_n008-2018-09-18-13-41-50-0400__CAM_FRONT_RIGHT__1537293306670482.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0009_n008-2018-09-18-13-41-50-0400__CAM_BACK__1537293306687558.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0010_n008-2018-09-18-13-41-50-0400__CAM_BACK_LEFT__1537293306697405.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0011_n008-2018-09-18-13-41-50-0400__CAM_BACK_RIGHT__1537293306678113.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
 
 ---
 
+## Example idx=9012
+
+**Q:** Question: Which lanes are each important object on in the scene? Answer:
+**Pred:** `< c1,CAM_BACK,850.0,500.0> is on the ego lane, < c2,CAM_FRONT,840.0,500.0> is on the ego lane, and < c3,CAM_FRONT,840.0,500.0> is on the left lane.`
+**Gold:** `< c2,CAM_BACK,977.5,545.8> is in the ego lane.`
+
+*Metrics:* 🔴 **Low match** | (EM=0, F1=0.286)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0012_n015-2018-10-08-15-52-24+0800__CAM_FRONT__1538985526612472.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0013_n015-2018-10-08-15-52-24+0800__CAM_FRONT_LEFT__1538985526604844.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0014_n015-2018-10-08-15-52-24+0800__CAM_FRONT_RIGHT__1538985526620339.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0015_n015-2018-10-08-15-52-24+0800__CAM_BACK__1538985526637525.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0016_n015-2018-10-08-15-52-24+0800__CAM_BACK_LEFT__1538985526647423.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0017_n015-2018-10-08-15-52-24+0800__CAM_BACK_RIGHT__1538985526627893.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
+
+---
+
+## Example idx=8024
+
+**Q:** Question: What is the status of the truck that is to the front of the ego car? Answer:
+**Pred:** `One truck is parked.`
+**Gold:** `The truck in front of the ego car is parked.`
+
+*Metrics:* 🟡 **Partial match** | (EM=0, F1=0.500)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0018_n008-2018-07-27-12-07-38-0400__CAM_FRONT__1532707769162404.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0019_n008-2018-07-27-12-07-38-0400__CAM_FRONT_LEFT__1532707769154799.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0020_n008-2018-07-27-12-07-38-0400__CAM_FRONT_RIGHT__1532707769170482.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0021_n008-2018-07-27-12-07-38-0400__CAM_BACK__1532707769187558.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0022_n008-2018-07-27-12-07-38-0400__CAM_BACK_LEFT__1532707769197405.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0023_n008-2018-07-27-12-07-38-0400__CAM_BACK_RIGHT__1532707769178113.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
+
+---
+
+## Example idx=7314
+
+**Q:** Question: Based on the observations of <c3,CAM_FRONT,350.8,512.5>, what are possible actions to be taken by <c4,CAM_FRONT,1157.3,521.4>? What is the reason? Answer:
+**Pred:** `The action is none, the reason is there is no safety issue.`
+**Gold:** `The action is none, the reason is there is no safety issue.`
+
+*Metrics:* ✅ **Exact match** | (EM=1, F1=1.000)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0024_n015-2018-09-26-11-17-24+0800__CAM_FRONT__1537932160912460.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0025_n015-2018-09-26-11-17-24+0800__CAM_FRONT_LEFT__1537932160904844.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0026_n015-2018-09-26-11-17-24+0800__CAM_FRONT_RIGHT__1537932160920339.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0027_n015-2018-09-26-11-17-24+0800__CAM_BACK__1537932160937525.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0028_n015-2018-09-26-11-17-24+0800__CAM_BACK_LEFT__1537932160947423.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0029_n015-2018-09-26-11-17-24+0800__CAM_BACK_RIGHT__1537932160927893.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
+
+---
+
+## Example idx=4572
+
+**Q:** Question: Are there moving pedestrians to the front of the ego car? Answer:
+**Pred:** `Yes.`
+**Gold:** `No.`
+
+*Metrics:* 🔴 **Low match** | (EM=0, F1=0.000)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0030_n008-2018-09-18-13-10-39-0400__CAM_FRONT__1537290738762404.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0031_n008-2018-09-18-13-10-39-0400__CAM_FRONT_LEFT__1537290738754799.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0032_n008-2018-09-18-13-10-39-0400__CAM_FRONT_RIGHT__1537290738770482.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0033_n008-2018-09-18-13-10-39-0400__CAM_BACK__1537290738787558.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0034_n008-2018-09-18-13-10-39-0400__CAM_BACK_LEFT__1537290738797405.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0035_n008-2018-09-18-13-10-39-0400__CAM_BACK_RIGHT__1537290738778113.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
+
+---
+
+## Example idx=3358
+
+**Q:** Question: What is the status of the cars that are to the front left of the ego car? Answer:
+**Pred:** `Many cars are parked.`
+**Gold:** `Many cars are parked.`
+
+*Metrics:* ✅ **Exact match** | (EM=1, F1=1.000)
+
+<table>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_FRONT_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0036_n008-2018-07-27-12-07-38-0400__CAM_FRONT__1532707774762404.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0037_n008-2018-07-27-12-07-38-0400__CAM_FRONT_LEFT__1532707774754799.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0038_n008-2018-07-27-12-07-38-0400__CAM_FRONT_RIGHT__1532707774770482.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+<tr>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_LEFT</th>
+<th style='text-align:center;padding:4px;font-size:12px;background:#111;color:#eee'>CAM_BACK_RIGHT</th>
+</tr>
+<tr>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0039_n008-2018-07-27-12-07-38-0400__CAM_BACK__1532707774787558.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0040_n008-2018-07-27-12-07-38-0400__CAM_BACK_LEFT__1532707774797405.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+<td style='text-align:center;padding:4px;background:#000;'><img src="assests/images/qualitative/0041_n008-2018-07-27-12-07-38-0400__CAM_BACK_RIGHT__1532707774778113.jpg" alt="" width="340" style='border-radius:8px;border:1px solid #333;'/></td>
+</tr>
+</table>
+
+---
+
+# NOTE
+# Your remaining qualitative examples continue the same way.
+# Apply the same path update:
+#   src="images/....jpg"  ->  src="assests/images/qualitative/....jpg"
+# If you want, paste the rest and I’ll rewrite all paths in one go.
+
+---
+
+## Future Work (Phase-2)
+- Curating region-specific driving data (India)
+- Full ablations (anchor count, gating variants, encoder/decoder choices)
+
+---
+
+## References
+- EM-VLM4AD (CVPRW VLADR 2024)
+- DriveLM-Agent (ECCV 2024)
+- LingoQA (ECCV 2024)
+- Transformer / ViT / CLIP / Perceiver / T5
+- Metrics: BLEU, ROUGE, METEOR, CIDEr, BERTScore
+
+---
+
+## Acknowledgements
+- IIT Roorkee
+- Mehta Family School of AI & Data Science
+- Supervisor: Prof. Indrajit Ghosh
