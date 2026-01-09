@@ -101,7 +101,7 @@ Suggested path:
 ## Detailed Architecture (IMAGE PLACEHOLDER)
 Replace the image below with your detailed model diagram (AnchorFormer + Gated Pooling + T5).
 
-![Detailed Architecture](assests/GeoAnchors_eraser_architecture1.png)
+![Detailed Architecture](assests/geoformer_eraser_architecture1.png)
 
 Suggested path:
 - assets/architecture/architecture_detailed.png
