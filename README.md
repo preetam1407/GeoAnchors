@@ -1,6 +1,6 @@
-# GeoFormer: Multi-View Vision–Language Model for Autonomous Driving (VQA)
+# GeoAnchors: Multi-View Vision–Language Model for Autonomous Driving (VQA)
 
-GeoFormer is a **multi-view Visual Question Answering (VQA)** system for autonomous driving that fuses **6 synchronized surround-view camera assests/images** with a **natural language question** and generates an **open-ended answer** (yes/no, counts, short explanations).
+GeoAnchors is a **multi-view Visual Question Answering (VQA)** system for autonomous driving that fuses **6 synchronized surround-view camera assests/images** with a **natural language question** and generates an **open-ended answer** (yes/no, counts, short explanations).
 
 > Core idea: compress multi-view visual information into a **compact scene representation** using **AnchorFormer + Gated Pooling**, then use **T5** to generate answers.
 
@@ -11,7 +11,7 @@ GeoFormer is a **multi-view Visual Question Answering (VQA)** system for autonom
 - Problem Statement
 - Challenges & Research Gap
 - Dataset
-- Method (GeoFormer)
+- Method (GeoAnchors)
   - High-Level Architecture (image)
   - Detailed Architecture (image)
 - Training Setup
@@ -30,7 +30,7 @@ Autonomous vehicles operate in a dynamic world where decisions must be made quic
 Beyond perception outputs (boxes/lanes/trajectories), people ask scene-level questions like:
 - “What are we waiting for?”
 - “Is it safe to go?”
-GeoFormer adds a language interface on top of multi-view perception.
+GeoAnchors adds a language interface on top of multi-view perception.
 
 ---
 
@@ -73,8 +73,8 @@ Built on **nuScenes**:
 
 ---
 
-## Method: GeoFormer
-GeoFormer consists of:
+## Method: GeoAnchors
+GeoAnchors consists of:
 1) Shared Image Encoder (CLIP ViT-L/14)
    - Encodes each of the 6 views using shared weights
 
@@ -101,7 +101,7 @@ Suggested path:
 ## Detailed Architecture (IMAGE PLACEHOLDER)
 Replace the image below with your detailed model diagram (AnchorFormer + Gated Pooling + T5).
 
-![Detailed Architecture](assests/geoformer_eraser_architecture1.png)
+![Detailed Architecture](assests/GeoAnchors_eraser_architecture1.png)
 
 Suggested path:
 - assets/architecture/architecture_detailed.png
@@ -170,7 +170,7 @@ python eval.py \
 ### Evaluation Metrics
 | Model     | EM (%) | F1 (%) | BLEU-4 | METEOR | ROUGE-L | CIDEr |
 |----------|--------:|-------:|-------:|-------:|--------:|------:|
-| GeoFormer | 51.02  | 69.60  | 47.10  | 37.39  | 69.12   | 2.99  |
+| GeoAnchors | 51.02  | 69.60  | 47.10  | 37.39  | 69.12   | 2.99  |
 
 ---
 
@@ -181,7 +181,7 @@ python eval.py \
 | EM-VLM4AD<sub>Base</sub> [1] | 45.36 | 34.49 | 71.98 | 3.20 |
 | EM-VLM4AD<sub>Q-Large</sub> [1] | 40.11 | 34.34 | 70.72 | 3.10 |
 | DriveLM-Agent [2] | 53.09 | 36.19 | 66.79 | 2.79 |
-| **GeoFormer (T5-base, subdata_10)** | **47.10** | **37.39** | **69.12** | **2.99** |
+| **GeoAnchors (T5-base, subdata_10)** | **47.10** | **37.39** | **69.12** | **2.99** |
 
 ---
 
